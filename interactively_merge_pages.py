@@ -32,13 +32,13 @@ except ImportError:
 
 # the height in pixels(???) of any images that open in windows.
 # if it is too big, you cannot see the bottom part of the image :(
-DISPLAY_HEIGHT = 780
+DISPLAY_HEIGHT = 1000
 
 
 # if this is TRUE then you will see the pages in a random order (recommended).
 # this should help prevent you from getting... distracted.
 # if this is FALSE then you will see the pages in numerical order.
-RANDOMIZE_PAGE_ORDER = True
+RANDOMIZE_PAGE_ORDER = False
 
 DEBUG_ALIGNMENT = False
 DEBUG_DIFF = False
@@ -61,8 +61,8 @@ OPENING_SIZE = 5        ### more "opening" to eliminate slivers & bridges
 CLOSING_SIZE = 11       ### more "closing" to bridge gaps
 DEBUG_DIFF_ANIMATION_TIME = 1000
 
-PREVIEW_BLINK_RATE_MS = 400
-PREVIEW_BLINK_DUTY_CYCLE = 0.5
+PREVIEW_BLINK_RATE_MS = 2500
+PREVIEW_BLINK_DUTY_CYCLE = 0.80
 BASEIMG_COLOR = (255, 0, 0)
 NEWIMG_COLOR = (0, 0, 255)
 BORDER_THICKNESS = 2  # this is a purely visual thing, does not effect the image saved to disk at all
@@ -77,6 +77,8 @@ KEYS_MARKDIFF = [ord(k) for k in ('d','D')]
 KEYS_NOTDIFF =  [ord(k) for k in ('n','N')]
 KEYS_ALLBASE =  [ord(k) for k in ('b','B')]
 KEYS_ALLSEC =   [ord(k) for k in ('s','S')]
+KEYS_MARKDIFF_ELLIPSE = [ord(k) for k in ('e','E')]
+KEYS_NOTDIFF_ELLIPSE =  [ord(k) for k in ('h','H')]
 
 # problem: images are different sizes & slightly rotated
 # solution: "image feature detection and registration"
@@ -116,7 +118,7 @@ def my_resize(input_img: np.ndarray, newheight=None, newwidth=None) -> np.ndarra
 	else:
 		# both are specified!
 		newdim = (newwidth, newheight)
-	im_resized = im.resize(newdim, resample=Image.BICUBIC)
+	im_resized = im.resize(newdim, resample=Image.LANCZOS)
 	matchedVis2 = np.array(im_resized)
 	return matchedVis2
 
@@ -429,7 +431,7 @@ def interactive_merge_images(newimg: np.ndarray, baseimg: np.ndarray, contours: 
 	
 	cv2.namedWindow('Merged Image (interactive preview)', flags=(cv2.WINDOW_AUTOSIZE | cv2.WINDOW_KEEPRATIO | cv2.WINDOW_GUI_NORMAL))
 	# cv2.namedWindow('Merged Image (interactive preview)', flags=(cv2.WINDOW_NORMAL | cv2.WINDOW_FREERATIO | cv2.WINDOW_GUI_NORMAL))
-	cv2.moveWindow('Merged Image (interactive preview)',0,0)
+	cv2.moveWindow('Merged Image (interactive preview)',320,0)
 	cv2.setMouseCallback('Merged Image (interactive preview)', mouse_callback)
 	
 	print(">>>>>> begin interactive merge <<<<<<")
@@ -556,7 +558,69 @@ def interactive_merge_images(newimg: np.ndarray, baseimg: np.ndarray, contours: 
 						paste_contour_region(d)
 					else: # if yes, add it to the output & remove from list of new contours
 						new_superlist.append(sss)
-						contours.pop(match)
+						contours_list = list(contours)
+						contours_list.pop(match)
+						contours = tuple(contours_list)
+				aaaa = len(contours)                        # number added
+				bbbb = len(superlist) - len(new_superlist)  # number deleted
+				# any new contours get created as jp, no paste necessary
+				for c in contours:
+					mask = np.zeros(newimg.shape[0:2], dtype="uint8")
+					cv2.drawContours(mask, [c], 0, 255, -1)
+					new_superlist.append([c, 0, mask])
+				# overwrite superlist
+				superlist = new_superlist
+				if debug:
+					print("%d added, %d deleted, now %d" % (aaaa, bbbb, len(superlist)))
+				# unset the lastregion cuz i changed the superlist
+				lastregion = -1
+				# FINALLY, redraw
+				preview2, preview_outlines2 = redraw_img_for_display()
+			pass
+		elif v in KEYS_MARKDIFF_ELLIPSE or v in KEYS_NOTDIFF_ELLIPSE:
+			if v in KEYS_MARKDIFF_ELLIPSE:
+				print("mark region as diff (elliptical):")
+			else:
+				print("mark region as NOT diff (elliptical):")
+			# BUG: for some reason the script prints the instructions only after the script completes?????
+			#   and it prints it for every time the selectROI was called...
+			#   actually, this only happens when running in Pycharm. strange.
+			# due to the ROI function we are gonna be stuck here until it returns. no blinking.
+			# begin ROI prompt. force window to display the image i want.
+			# TO DO: Turn preview outlines from selectROI's rectangle into actual ellipse
+			# "r" is in format (x1, y1, width, height)
+			r = cv2.selectROI("Merged Image (interactive preview)", preview_outlines2, showCrosshair=True, fromCenter=False)
+			# when done, must restore the mouse callback!
+			cv2.setMouseCallback('Merged Image (interactive preview)', mouse_callback)
+			# only continue past here if a real-sized rect is selected
+			if r[2] != 0 and r[3] != 0:
+				# transform display-image coordinates to full-image coordinates
+				r = [round(xy * scale) for xy in r]
+				# draw all contours onto a zero-mask, then draw the box in white, then completely re-evaluate contours
+				newconts = np.zeros(newimg.shape[0:2], dtype="uint8")  # blank mask
+				existing_contours = [c[0] for c in superlist]
+				cv2.drawContours(newconts, existing_contours, -1, 255, -1)  # draw all contours w/ fill
+				if v in KEYS_MARKDIFF_ELLIPSE:
+					cv2.ellipse(newconts, (r[0]+round((r[2]//2)), r[1]+round((r[3]//2))), (round(r[2]//2), round(r[3]//2)), 0, 0, 360, 255, -1)  # draw ellipse in white w/ fill
+				else:
+					cv2.ellipse(newconts, (r[0]+round((r[2]//2)), r[1]+round((r[3]//2))), (round(r[2]//2), round(r[3]//2)), 0, 0, 360, 0, -1)  # draw ellipse in BLACK w/ fill
+				contours = cv2.findContours(newconts, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+				contours = contours[0] if len(contours) == 2 else contours[1]
+				new_superlist = []
+				for d,sss in enumerate(superlist):
+					match = -1 # does the contour of this entry show up in the list of new contours?
+					for i in range(len(contours)):
+						if np.array_equiv(sss[0],contours[i]):
+							match = i
+							break
+					if match == -1: # if no, set it to jp then paste
+						sss[1] = 0
+						paste_contour_region(d)
+					else: # if yes, add it to the output & remove from list of new contours
+						new_superlist.append(sss)
+						contours_list = list(contours)
+						contours_list.pop(match)
+						contours = tuple(contours_list)
 				aaaa = len(contours)                        # number added
 				bbbb = len(superlist) - len(new_superlist)  # number deleted
 				# any new contours get created as jp, no paste necessary
@@ -759,6 +823,9 @@ def main():
 		r = input("> ")
 		# strip whitespace cuz yeah
 		base_template = os.path.normpath(r).strip()
+		# if the OS is Windows, then strip double quote marks for drag & dropping
+		if os.name == 'nt':
+			base_template = base_template.strip('"')
 		try:
 			base_template.format(4)
 		except Exception as e:
@@ -778,6 +845,9 @@ def main():
 		r = input("> ")
 		# strip whitespace cuz yeah
 		new_template = os.path.normpath(r).strip()
+		# if the OS is Windows, then strip double quote marks for drag & dropping
+		if os.name == 'nt':
+			new_template = new_template.strip('"')
 		try:
 			new_template.format(4)
 		except Exception as e:
@@ -797,6 +867,9 @@ def main():
 		r = input("> ")
 		# strip whitespace cuz yeah
 		out_template = os.path.normpath(r).strip()
+		# if the OS is Windows, then strip double quote marks for drag & dropping
+		if os.name == 'nt':
+			out_template = out_template.strip('"')
 		try:
 			out_template.format(4)
 		except Exception as e:
@@ -830,14 +903,21 @@ def main():
 		print("Please enter the filepath of the BASE image file:")
 		r = input("> ")
 		base_path = os.path.normpath(r).strip()
+		# if the OS is Windows, then strip double quote marks for drag & dropping
+		if os.name == 'nt':
+			base_path = base_path.strip('"')
 		
 		print("Please enter the filepath of the SECONDARY image file you will take pieces from:")
 		r = input("> ")
 		new_path = os.path.normpath(r).strip()
+		if os.name == 'nt':
+			new_path = new_path.strip('"')
 		
 		print("Please enter the filepath for the desired output file:")
 		r = input("> ")
 		out_path = os.path.normpath(r).strip()
+		if os.name == 'nt':
+			out_path = out_path.strip('"')
 		
 		# assemble them into the same list-structure that the batch mode uses
 		item = (base_path, new_path, out_path)
