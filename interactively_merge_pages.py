@@ -1,5 +1,5 @@
 """
-Requires Python 3.7 or higher.
+Requires Python 3.7 or higher, Pillow 9.1.0 or higher.
 
 Windows command-line commands needed to install proper library versions:
 pip install --upgrade pip
@@ -7,6 +7,8 @@ pip install --upgrade numpy
 pip install --upgrade pillow
 pip install --upgrade scikit-image
 pip install --upgrade opencv-python
+
+If you are using Windows 7 or Vista, verify the 'set_DPI_aware_Windows' function
 
 Articles that describe how to do the nerd stuff:
 https://www.pyimagesearch.com/2020/08/31/image-alignment-and-registration-with-opencv/
@@ -19,6 +21,7 @@ try:
 	import copy
 	import os
 	import random
+	import ctypes
 	
 	import cv2
 	import numpy as np
@@ -62,12 +65,14 @@ CLOSING_SIZE = 11       ### more "closing" to bridge gaps
 DEBUG_DIFF_ANIMATION_TIME = 1000
 
 PREVIEW_BLINK_RATE_MS = 2500
-PREVIEW_BLINK_DUTY_CYCLE = 0.80
+PREVIEW_BLINK_DUTY_CYCLE = 0.8
 BASEIMG_COLOR = (255, 0, 0)
 NEWIMG_COLOR = (0, 0, 255)
 BORDER_THICKNESS = 2  # this is a purely visual thing, does not effect the image saved to disk at all
 INTERACTIVE_GROWSHRINK_SIZE = 5  ###
 
+JPEG_QUALITY = 95	### 0 to 100, higher quality means larger file size, OpenCV default: 95
+PNG_COMPRESSION = 6	### 0 to 9, compression quality, higher value will takes longer time , OpenCV default: 3
 
 KEYS_RESET =    [ord(k) for k in ('r','R')]
 KEYS_GROW =     [ord(k) for k in ('=','+')]
@@ -118,7 +123,7 @@ def my_resize(input_img: np.ndarray, newheight=None, newwidth=None) -> np.ndarra
 	else:
 		# both are specified!
 		newdim = (newwidth, newheight)
-	im_resized = im.resize(newdim, resample=Image.LANCZOS)
+	im_resized = im.resize(newdim, resample=Image.Resampling.LANCZOS)
 	matchedVis2 = np.array(im_resized)
 	return matchedVis2
 
@@ -369,7 +374,7 @@ def mouse_callback(event, x, y, flags, param):
 	if event == cv2.EVENT_LBUTTONDOWN:
 		ixy = [x,y]
 
-def interactive_merge_images(newimg: np.ndarray, baseimg: np.ndarray, contours: list, debug=False):
+def interactive_merge_images(newimg: np.ndarray, baseimg: np.ndarray, contours: list, input_filename, debug=False):
 	"""Step 3 of the 3-step process. Select which image source to use for each region."""
 	global ixy
 	fill_borders = False
@@ -429,10 +434,11 @@ def interactive_merge_images(newimg: np.ndarray, baseimg: np.ndarray, contours: 
 	# create the smaller displayable versions
 	preview2, preview_outlines2 = redraw_img_for_display()
 	
-	cv2.namedWindow('Merged Image (interactive preview)', flags=(cv2.WINDOW_AUTOSIZE | cv2.WINDOW_KEEPRATIO | cv2.WINDOW_GUI_NORMAL))
-	# cv2.namedWindow('Merged Image (interactive preview)', flags=(cv2.WINDOW_NORMAL | cv2.WINDOW_FREERATIO | cv2.WINDOW_GUI_NORMAL))
-	cv2.moveWindow('Merged Image (interactive preview)',320,0)
-	cv2.setMouseCallback('Merged Image (interactive preview)', mouse_callback)
+	cv2_window_name = f"{str(os.path.basename(input_filename))} - Merged Image (interactive preview)"
+	cv2.namedWindow(cv2_window_name, flags=(cv2.WINDOW_AUTOSIZE | cv2.WINDOW_KEEPRATIO | cv2.WINDOW_GUI_NORMAL))
+	# cv2.namedWindow(cv2_window_name, flags=(cv2.WINDOW_NORMAL | cv2.WINDOW_FREERATIO | cv2.WINDOW_GUI_NORMAL))
+	cv2.moveWindow(cv2_window_name,240,0)
+	cv2.setMouseCallback(cv2_window_name, mouse_callback)
 	
 	print(">>>>>> begin interactive merge <<<<<<")
 	print("found %d regions of major difference" % len(superlist))
@@ -445,6 +451,8 @@ def interactive_merge_images(newimg: np.ndarray, baseimg: np.ndarray, contours: 
 	print("   F          ... toggle border-region or fill-region (preview only)")
 	print("   D          ... draw a box to mark as different")
 	print("   N          ... draw a box to mark as NOT different")
+	print("   E          ... draw an ellipse to mark as different")
+	print("   H          ... draw an ellipse to mark as NOT different")
 	print("   B          ... set all regions to BASE image")
 	print("   S          ... set all regions to SECONDARY image")
 	
@@ -498,15 +506,18 @@ def interactive_merge_images(newimg: np.ndarray, baseimg: np.ndarray, contours: 
 					paste_contour_region(d)
 			preview2, preview_outlines2 = redraw_img_for_display()
 		elif v in KEYS_RESET:
-			print("reset")
-			lastregion = -1
-			fill_borders = False
-			superlist = copy.deepcopy(superlist_original)
-			preview = baseimg.copy()
-			preview2, preview_outlines2 = redraw_img_for_display()
+			print("press reset key once again to confirm, any other key to cancel")
+			confirm_reset = cv2.waitKey(0)
+			if confirm_reset in KEYS_RESET:
+				print("reset")
+				lastregion = -1
+				fill_borders = False
+				superlist = copy.deepcopy(superlist_original)
+				preview = baseimg.copy()
+				preview2, preview_outlines2 = redraw_img_for_display()
 		elif v == 27:  # esc
 			print("exit")
-			cv2.destroyWindow("Merged Image (interactive preview)")
+			cv2.destroyWindow(cv2_window_name)
 			return None
 		elif v == 13: # or v == ord(' '): # enter or space
 			print("commit changes!")
@@ -529,9 +540,9 @@ def interactive_merge_images(newimg: np.ndarray, baseimg: np.ndarray, contours: 
 			# due to the ROI function we are gonna be stuck here until it returns. no blinking.
 			# begin ROI prompt. force window to display the image i want.
 			# "r" is in format (x1, y1, width, height)
-			r = cv2.selectROI("Merged Image (interactive preview)", preview_outlines2, showCrosshair=False, fromCenter=False)
+			r = cv2.selectROI(cv2_window_name, preview_outlines2, showCrosshair=False, fromCenter=False)
 			# when done, must restore the mouse callback!
-			cv2.setMouseCallback('Merged Image (interactive preview)', mouse_callback)
+			cv2.setMouseCallback(cv2_window_name, mouse_callback)
 			# only continue past here if a real-sized rect is selected
 			if r[2] != 0 and r[3] != 0:
 				# transform display-image coordinates to full-image coordinates
@@ -589,9 +600,9 @@ def interactive_merge_images(newimg: np.ndarray, baseimg: np.ndarray, contours: 
 			# begin ROI prompt. force window to display the image i want.
 			# TO DO: Turn preview outlines from selectROI's rectangle into actual ellipse
 			# "r" is in format (x1, y1, width, height)
-			r = cv2.selectROI("Merged Image (interactive preview)", preview_outlines2, showCrosshair=True, fromCenter=False)
+			r = cv2.selectROI(cv2_window_name, preview_outlines2, showCrosshair=True, fromCenter=False)
 			# when done, must restore the mouse callback!
-			cv2.setMouseCallback('Merged Image (interactive preview)', mouse_callback)
+			cv2.setMouseCallback(cv2_window_name, mouse_callback)
 			# only continue past here if a real-sized rect is selected
 			if r[2] != 0 and r[3] != 0:
 				# transform display-image coordinates to full-image coordinates
@@ -707,15 +718,15 @@ def interactive_merge_images(newimg: np.ndarray, baseimg: np.ndarray, contours: 
 		# last, display/animate the blinking frames
 		if framenum < int(PREVIEW_BLINK_DUTY_CYCLE * PREVIEW_BLINK_RATE_MS / 25):
 			# with outlines
-			cv2.imshow("Merged Image (interactive preview)", preview_outlines2)
+			cv2.imshow(cv2_window_name, preview_outlines2)
 		else:
 			# without outlines
 			# (preview of what will be saved)
-			cv2.imshow("Merged Image (interactive preview)", preview2)
+			cv2.imshow(cv2_window_name, preview2)
 		# inc with wrap
 		framenum = (framenum + 1) % int(PREVIEW_BLINK_RATE_MS / 25)
 	
-	cv2.destroyWindow("Merged Image (interactive preview)")
+	cv2.destroyWindow(cv2_window_name)
 	# done editing, now return the final product
 	return preview
 
@@ -772,17 +783,24 @@ def everything(filename_baseimg, filename_newimg, filename_outimg):
 	contours = find_image_differences(image_aligned, template, debug=DEBUG_DIFF)
 	
 	# THIRD, open the interactive window to select which diff regions to toggle
-	merged = interactive_merge_images(image_aligned, template, contours, debug=DEBUG_INTERACTIVE)
+	merged = interactive_merge_images(image_aligned, template, contours, input_filename=filename_baseimg, debug=DEBUG_INTERACTIVE)
 	
 	if merged is not None:
 		print("saving '%s'..." % filename_outimg, end="")
 		try:
+			filename_only_outimg = str(os.path.basename(filename_outimg))
 			# create folder if necessary
 			if os.path.dirname(filename_outimg):
 				os.makedirs(os.path.abspath(os.path.dirname(filename_outimg)), exist_ok=True)
 			# TODO: do write with PIL, maybe? what is advantage, disadvantage?
-			# NOTE: default JPEG write quality is 95
-			cv2.imwrite(filename_outimg, merged)
+			if filename_only_outimg.lower().endswith(".jpg") or filename_only_outimg.lower().endswith(".jpeg"):
+				cv2.imwrite(filename_outimg, merged, [int(cv2.IMWRITE_JPEG_QUALITY), JPEG_QUALITY])
+				print(f"JPEG {JPEG_QUALITY}")
+			elif filename_only_outimg.lower().endswith(".png"):
+				cv2.imwrite(filename_outimg, merged, [int(cv2.IMWRITE_PNG_COMPRESSION), PNG_COMPRESSION])
+				print(f"PNG {PNG_COMPRESSION}")
+			else:
+				cv2.imwrite(filename_outimg, merged)
 		except Exception as e:
 			print("")
 			print(e.__class__.__name__, e)
@@ -796,7 +814,27 @@ def everything(filename_baseimg, filename_newimg, filename_outimg):
 ####################################################################################################
 ####################################################################################################
 
+def set_DPI_aware_Windows():
+	"""Set OpenCV windows to be DPI aware for Windows 8 and above to prevent forced UI scaling by Windows OS
+	https://stackoverflow.com/questions/44398075/can-dpi-scaling-be-enabled-disabled-programmatically-on-a-per-session-basis"""
+	
+	# Set DPI Awareness  (Windows 10 and 8)
+	errorCode = ctypes.windll.shcore.SetProcessDpiAwareness(2)
+	# the argument is the awareness level, which can be 0, 1 or 2:
+	# 0 non-DPI aware, 1 system DPI aware, 2 per monitor DPI aware
+	
+	# Set DPI Awareness  (Windows 7 and Vista)
+	# success = ctypes.windll.user32.SetProcessDPIAware()
+	# behaviour on later OSes is undefined, although when I run it on my Windows 10 machine, it seems to work with effects identical to SetProcessDpiAwareness(1)
+
+####################################################################################################
+####################################################################################################
+####################################################################################################
+
 def main():
+	if os.name == 'nt':
+		set_DPI_aware_Windows()
+	
 	"""How to iterate over files to do merge for all pages."""
 	
 	print("Select input mode: 1=batch, 2=single-page")
